@@ -437,65 +437,58 @@ function ArchitectureSection() {
     <SectionCard title="Architecture Diagram">
       <div className="bg-slate-950 rounded-xl p-4 md:p-6 border border-slate-700 overflow-x-auto">
         <pre className="text-xs md:text-sm text-slate-300 font-mono leading-relaxed whitespace-pre">
-{`                            +-----------------------+
-                            |    USERS (Browsers,   |
-                            |    Mobile Apps)       |
-                            +-----------+-----------+
-                                        |
-                 +----------------------+----------------------+
-                 |                                             |
-        Read requests (feed,                          Write requests (upload)
-        photos, thumbnails)                                    |
-                 |                                             |
-                 v                                             v
-        +----------------+                           +------------------+
-        |      CDN       |                           |  Load Balancer   |
-        | (edge caching  |                           | (distributes API |
-        |  for images)   |                           |  to app servers) |
-        +-------+--------+                           +--------+---------+
-                |                                             |
-                |                      +----------------------+----------------------+
-                |                      |                      |                      |
-                |                      v                      v                      v
-                |               +------------+         +------------+         +------------+
-                |               | App Server |         | App Server |         | App Server |
-                |               |     1      |         |     2      |         |     N      |
-                |               +-----+------+         +-----+------+         +-----+------+
-                |                     |                      |                      |
-                |                     +----------------------+------+--------------+
-                |                                            |
-                |                               +------------+------------+
-                |                               |                         |
-                |                               v                         v
-                |                    +-------------------+      +-------------------+
-                |                    |    Cache Layer    |      |  Message Queue    |
-                |                    | (Redis/Memcached) |      | (thumbnail jobs)  |
-                |                    | feed, sessions,   |      +---------+---------+
-                |                    | hot data          |                |
-                |                    +-------------------+                v
-                |                                              +-------------------+
-                |                                              |  Worker Service   |
-                |                                              | (thumbnail gen)   |
-                |                                              +---------+---------+
-                |                                                        |
-        +-------+--------------------------------------------------------+--------+
-        |                                                                                |
-        v                                                                                v
-+------------------+                                                          +------------------+
-| Object Storage   |                                                          |    Database      |
-| (S3 / GCS)       |                                                          |                  |
-|                  |                                                          | +--------------+ |
-| - Original photos|                                                          | | Primary DB   | |
-| - Thumbnails     |                                                          | | (writes)     | |
-+------------------+                                                          | +------+-------+ |
-                                                                              |        |         |
-                                                                              |   replication   |
-                                                                              |        |         |
-                                                                              | +------v-------+ |
-                                                                              | | Read Replica | |
-                                                                              | | (reads)      | |
-                                                                              | +--------------+ |
-                                                                              +------------------+`}
+{`                          ┌─────────────────────────────────────────────────────────────┐
+                          │                        USERS (Mobile/Web)                    │
+                          └──────────────┬──────────────────────────┬───────────────────┘
+                                         │                          │
+                              Read requests (feed)        Write requests (upload)
+                                         │                          │
+                                         ▼                          ▼
+                          ┌──────────────────────────┐   ┌──────────────────────┐
+                          │          CDN             │   │     Load Balancer     │
+                          │  (serves photos &        │   │  (distributes traffic │
+                          │   thumbnails to users)   │   │   to app servers)     │
+                          └──────────┬───────────────┘   └──────────┬───────────┘
+                                     │                              │
+                                     │          ┌───────────────────┼───────────────────┐
+                                     │          │                   │                   │
+                                     │          ▼                   ▼                   ▼
+                                     │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
+                                     │  │  App Server  │  │  App Server  │  │  App Server  │
+                                     │  │    (1)       │  │    (2)       │  │    (N)       │
+                                     │  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘
+                                     │         │                 │                 │
+                                     │         └─────────────────┼─────────────────┘
+                                     │                           │
+                                     │              ┌────────────┴────────────┐
+                                     │              │                         │
+                                     │              ▼                         ▼
+                                     │  ┌───────────────────┐    ┌───────────────────┐
+                                     │  │    Cache Layer     │    │   Message Queue    │
+                                     │  │  (Redis/Memcached) │    │  (thumbnail jobs)  │
+                                     │  │  feed data, user   │    └─────────┬─────────┘
+                                     │  │  sessions, hot data│              │
+                                     │  └───────────────────┘              ▼
+                                     │                         ┌───────────────────────┐
+                                     │                         │   Worker Service       │
+                                     │                         │  (generates thumbnails)│
+                                     │                         └───────────┬───────────┘
+                                     │                                     │
+                          ┌──────────┴─────────────────────────────────────┴──────────┐
+                          │                                                           │
+                          ▼                                                           ▼
+              ┌───────────────────────┐                               ┌───────────────────────┐
+              │    Object Storage     │                               │      Database          │
+              │  (S3 / GCS / Blob)    │                               │  ┌─────────────────┐  │
+              │                       │                               │  │   Primary DB     │  │
+              │  • Original photos    │                               │  │   (writes)       │  │
+              │  • Thumbnails         │                               │  └────────┬────────┘  │
+              │                       │                               │           │ replicate │
+              └───────────────────────┘                               │  ┌────────┴────────┐  │
+                                                                      │  │  Read Replica   │  │
+                                                                      │  │  (reads)        │  │
+                                                                      │  └─────────────────┘  │
+                                                                      └───────────────────────┘`}
         </pre>
       </div>
 
@@ -529,47 +522,47 @@ function ComponentsSection() {
     {
       name: 'CDN',
       icon: '🌐',
-      description: 'Caches photo files and thumbnails at edge locations close to users so image requests are served with low latency without hitting origin servers.',
+      description: 'Solves the problem of high latency and origin server overload by caching photos and thumbnails at edge locations close to users.',
     },
     {
       name: 'Load Balancer',
       icon: '⚖️',
-      description: 'Distributes incoming API requests across multiple app servers to prevent any single server from being overwhelmed and to provide fault tolerance.',
+      description: 'Solves the problem of uneven traffic distribution and single points of failure by routing requests across multiple app servers.',
     },
     {
       name: 'App Servers',
       icon: '🖥️',
-      description: 'Process application logic including authentication, feed generation, upload handling, and API responses, and can be horizontally scaled by adding more instances.',
+      description: 'Solve the problem of handling application logic (authentication, feed generation, uploads) at scale by being horizontally scalable.',
     },
     {
       name: 'Cache (Redis/Memcached)',
       icon: '⚡',
-      description: 'Stores frequently accessed data such as feeds and user sessions in memory so reads complete in milliseconds instead of querying the database.',
+      description: 'Solves the problem of slow database reads by storing frequently accessed data (feeds, sessions) in memory for millisecond access.',
     },
     {
       name: 'Database (Primary)',
       icon: '🗄️',
-      description: 'Stores all structured metadata (users, photos, followers, feed state) and handles all write operations with strong consistency.',
+      description: 'Solves the problem of storing structured metadata (users, photos, followers) with strong consistency for write operations.',
     },
     {
       name: 'Database (Read Replica)',
       icon: '📖',
-      description: 'Maintains an asynchronous copy of the primary database to serve all read queries, offloading read traffic from the primary.',
+      description: 'Solves the problem of read queries competing with writes on the primary database by serving all reads from an asynchronous copy.',
     },
     {
       name: 'Object Storage (S3/GCS)',
       icon: '📦',
-      description: 'Stores the actual photo files and thumbnails durably and cheaply at massive scale, separate from the database.',
+      description: 'Solves the problem of storing massive binary files (photos) cheaply and durably at scale, separate from the database.',
     },
     {
       name: 'Message Queue',
       icon: '📨',
-      description: 'Decouples thumbnail generation from the upload request so users receive an immediate response while image processing happens asynchronously.',
+      description: 'Solves the problem of slow upload responses by decoupling thumbnail generation from the upload request.',
     },
     {
       name: 'Worker Service',
       icon: '🔧',
-      description: 'Picks up thumbnail jobs from the queue, generates resized thumbnails from original photos, and uploads them to object storage.',
+      description: 'Solves the problem of CPU-intensive image processing blocking app servers by handling thumbnail generation asynchronously.',
     },
   ]
 
@@ -650,25 +643,25 @@ function UploadFlowSection() {
 function TradeoffsSection() {
   const tradeoffs = [
     {
-      title: 'Pull-based vs. Push-based Feed Generation',
-      choice: 'We use a pull-based model where feeds are assembled on-demand when a user opens the app, rather than pre-computing (pushing) every follower\'s feed at upload time.',
-      benefit: 'Simple to implement; no storage overhead for pre-built feeds; works well when users have many followers (no fan-out explosion).',
-      cost: 'Feed assembly requires a database query on every view, adding latency; new photos may not appear instantly if caching delays refresh.',
-      alternative: 'A push-based model (fan-out on write) pre-builds each follower\'s feed when a photo is uploaded, giving instant visibility but requiring massive write amplification for users with millions of followers.',
+      title: 'Eventual Consistency vs. Strong Consistency (Feed Generation)',
+      choice: 'We use eventual consistency for the feed — when a user uploads a photo, it may take a few seconds before it appears in their followers\' feeds.',
+      benefit: 'The upload path is fast (user gets immediate confirmation), and we avoid locking the database for complex fan-out operations. The system scales well because feed generation can happen asynchronously.',
+      cost: 'Followers may not see a new photo instantly. In a social app this is usually acceptable, but for time-sensitive content (e.g., breaking news photos), users might notice a delay.',
+      alternative: 'We could use synchronous fan-out (write to every follower\'s feed immediately on upload), which gives instant visibility but makes uploads slower and doesn\'t scale for users with millions of followers.',
     },
     {
-      title: 'Long CDN Cache TTL vs. Short CDN Cache TTL',
-      choice: 'We use a long TTL (e.g., 24+ hours) for photos and thumbnails on the CDN.',
-      benefit: 'Most requests are served from edge caches, drastically reducing load on origin servers and object storage; users worldwide get very low latency.',
-      cost: 'If a user deletes or replaces a photo, the old version may remain visible on the CDN until the TTL expires, creating a window of stale or incorrect content.',
-      alternative: 'A short TTL (e.g., 60 seconds) or active cache invalidation ensures content freshness but increases origin traffic and reduces the CDN\'s performance benefit.',
+      title: 'CDN Caching TTL vs. Content Freshness',
+      choice: 'We cache photos and thumbnails on the CDN with a long TTL (e.g., 24 hours or more).',
+      benefit: 'The vast majority of photo requests are served from CDN edge caches, dramatically reducing load on origin servers and object storage, and providing very low latency to users worldwide.',
+      cost: 'If a user deletes a photo or edits their profile, the old version may remain visible on the CDN until the cache expires. This creates a window where stale or deleted content is still accessible.',
+      alternative: 'We could use a very short TTL (e.g., 60 seconds) or implement cache invalidation on every update. This ensures freshness but increases origin load and reduces the performance benefit of the CDN.',
     },
     {
-      title: 'Synchronous vs. Asynchronous Thumbnail Generation',
-      choice: 'Thumbnails are generated asynchronously via a message queue and worker service.',
-      benefit: 'Upload responses are fast (no waiting for image processing); CPU-intensive resizing is offloaded from app servers to dedicated workers that scale independently.',
-      cost: 'There is a delay before the thumbnail is available; users viewing their own profile immediately after upload may see a placeholder.',
-      alternative: 'Generating thumbnails synchronously during upload eliminates the delay but adds 1-3 seconds to every upload and couples image processing to the request path, reducing overall throughput.',
+      title: 'Thumbnail Generation — Synchronous vs. Asynchronous',
+      choice: 'We generate thumbnails asynchronously via a queue and worker.',
+      benefit: 'The upload response is fast because the user doesn\'t wait for image processing. Heavy CPU work (resizing) is offloaded from the app servers to dedicated workers that can be scaled independently.',
+      cost: 'There is a delay between upload and thumbnail availability. If a user views their own profile immediately after uploading, they may see a placeholder or no thumbnail until the worker finishes.',
+      alternative: 'We could generate thumbnails synchronously during upload. This eliminates the delay but makes uploads slower (adds 1–3 seconds of processing time) and couples image processing to the request path, reducing throughput.',
     },
   ]
 
