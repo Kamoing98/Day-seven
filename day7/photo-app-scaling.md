@@ -2,15 +2,16 @@
 
 ## Assumptions
 
-- Registered users: 10,000,000 (10 million)
-- Daily active users: 10% of registered = 1,000,000 (1 million)
-- Each active user uploads 1 photo per day
-- Each active user views 50 feed pages per day
-- Average photo size: 2 MB
-- Average thumbnail size: 50 KB (0.05 MB)
-- Peak-to-average ratio: 5x
-- Seconds per day: 86,400
-- Days per year: 365
+| Parameter | Value |
+|---|---|
+| Registered users | 10,000,000 (10 million) |
+| Daily active users (DAU) | 10% of registered = **1,000,000** (1 million) |
+| Photos uploaded per active user per day | 1 |
+| Feed pages viewed per active user per day | 50 |
+| Average photo size | 2 MB |
+| Average thumbnail size | 50 KB (0.05 MB) |
+| Peak-to-average ratio | 5× |
+| Days per year | 365 |
 
 ---
 
@@ -18,187 +19,218 @@
 
 ### Daily Active Users (DAU)
 
-DAU = 10,000,000 x 10% = **1,000,000 users/day**
+```
+DAU = 10,000,000 × 10% = 1,000,000 users/day
+```
 
 ### Uploads Per Second
 
-- Uploads per day = 1,000,000 users x 1 photo = 1,000,000 photos/day
-- Uploads per second = 1,000,000 / 86,400 = **~12 uploads/sec**
+```
+Uploads per day = 1,000,000 users × 1 photo = 1,000,000 photos/day
+Uploads per second = 1,000,000 / 86,400 ≈ 11.6 uploads/sec
+```
 
 ### Feed Views Per Second
 
-- Feed views per day = 1,000,000 users x 50 views = 50,000,000 views/day
-- Average views per second = 50,000,000 / 86,400 = **~579 views/sec**
-- Peak views per second (5x average) = 579 x 5 = **~2,894 views/sec**
+```
+Feed views per day = 1,000,000 users × 50 views = 50,000,000 views/day
+Average views per second = 50,000,000 / 86,400 ≈ 579 views/sec
+Peak views per second (5×) = 579 × 5 ≈ 2,894 views/sec
+```
 
 ### Photo Storage Per Year
 
-- Storage per photo = 2 MB (original) + 0.05 MB (thumbnail) = 2.05 MB
-- Photos per year = 1,000,000 x 365 = 365,000,000 photos
-- Storage per year = 365,000,000 x 2.05 MB = 748,250,000 MB = **~714 TB/year**
+```
+Storage per photo (original + thumbnail) = 2 MB + 0.05 MB = 2.05 MB
+Photos per year = 1,000,000 × 365 = 365,000,000 photos
+Storage per year = 365,000,000 × 2.05 MB = 748,250,000 MB
+              ≈ 730,713 GB
+              ≈ 714 TB per year
+```
 
 ---
 
-## Read-Heavy or Write-Heavy?
+## Read-Heavy vs. Write-Heavy
 
 **SnapShare is a read-heavy system.**
 
-The read-to-write ratio is approximately 579 / 12 = ~50:1. For every photo uploaded, there are about 50 feed views.
+The ratio of reads to writes is approximately:
 
-**What this means for the design:**
+```
+579 views/sec ÷ 11.6 uploads/sec ≈ 50:1
+```
 
-- We must optimize for fast reads, since reads vastly outnumber writes.
-- Caching is essential: most feed views should be served from cache, not the database.
-- Read replicas should be used to spread read load across multiple database copies.
-- A CDN should serve photos directly to users, bypassing app servers entirely.
-- The write path can tolerate slightly higher latency since writes are relatively rare.
-- Database indexing should prioritize read query patterns (feed lookups, follower queries).
+For every write (upload), there are roughly 50 reads (feed views). This means the system must be optimized for serving content quickly to many users, not for ingesting data. Key design implications:
+
+- **Caching** is critical — most feed views will hit cache rather than the database.
+- **Read replicas** should be used to distribute read load across multiple database copies.
+- **CDN** should serve photo files directly to users, bypassing the application servers entirely.
+- **Write path** can be slightly slower because writes are infrequent relative to reads.
 
 ---
 
 ## Why Photos Should NOT Be Stored in the Database
 
-Photos should not be stored inside the database because:
+Storing large binary files (BLOBs) inside a relational database is a bad practice at scale because:
 
-1. Databases are optimized for structured data, not large binary objects — storing 2 MB files bloats tables and slows queries.
-2. Databases are expensive per GB compared to object storage.
-3. Serving large files from a database ties up connections and CPU that should serve metadata queries.
-4. Database backups become impractically large when they include terabytes of binary data.
-5. Databases do not scale horizontally as easily as object storage for large files.
+1. **Databases are optimized for structured data**, not large binary objects. Storing 2 MB files bloats the database, slows down queries, and wastes expensive database storage.
+2. **Databases don't scale horizontally as easily** as object storage for large files.
+3. **Serving files from a database** ties up database connections and CPU, competing with metadata queries.
+4. **Backups become enormous** — backing up terabytes of photos through database backup tools is slow and expensive.
 
-**Instead, photos should be stored in Object Storage** (e.g., Amazon S3, Google Cloud Storage, Azure Blob Storage). Object storage is purpose-built for large binary files, is cheap per GB, scales infinitely, and integrates directly with CDNs for fast delivery. The database only stores metadata (photo ID, user ID, timestamps, URLs), while object storage holds the actual files.
+**Instead, photos should be stored in Object Storage** (e.g., Amazon S3, Google Cloud Storage, or Azure Blob Storage). Object storage is:
+- Designed for large binary files
+- Infinitely scalable
+- Cheap per GB
+- Can be served directly via a CDN
+- Separates concerns: the database stores metadata (who uploaded what, when, captions), while object storage holds the actual files.
 
 ---
 
 ## Architecture Diagram
 
 ```
-                            +-----------------------+
-                            |    USERS (Browsers,   |
-                            |    Mobile Apps)       |
-                            +-----------+-----------+
-                                        |
-                 +----------------------+----------------------+
-                 |                                             |
-        Read requests (feed,                          Write requests (upload)
-        photos, thumbnails)                                    |
-                 |                                             |
-                 v                                             v
-        +----------------+                           +------------------+
-        |      CDN       |                           |  Load Balancer   |
-        | (edge caching  |                           | (distributes API |
-        |  for images)   |                           |  to app servers) |
-        +-------+--------+                           +--------+---------+
-                |                                             |
-                |                      +----------------------+----------------------+
-                |                      |                      |                      |
-                |                      v                      v                      v
-                |               +------------+         +------------+         +------------+
-                |               | App Server |         | App Server |         | App Server |
-                |               |     1      |         |     2      |         |     N      |
-                |               +-----+------+         +-----+------+         +-----+------+
-                |                     |                      |                      |
-                |                     +----------------------+------+--------------+
-                |                                            |
-                |                               +------------+------------+
-                |                               |                         |
-                |                               v                         v
-                |                    +-------------------+      +-------------------+
-                |                    |    Cache Layer    |      |  Message Queue    |
-                |                    | (Redis/Memcached) |      | (thumbnail jobs)  |
-                |                    | feed, sessions,   |      +---------+---------+
-                |                    | hot data          |                |
-                |                    +-------------------+                v
-                |                                              +-------------------+
-                |                                              |  Worker Service   |
-                |                                              | (thumbnail gen)   |
-                |                                              +---------+---------+
-                |                                                        |
-        +-------+--------------------------------------------------------+--------+
-        |                                                                                |
-        v                                                                                v
-+------------------+                                                          +------------------+
-| Object Storage   |                                                          |    Database      |
-| (S3 / GCS)       |                                                          |                  |
-|                  |                                                          | +--------------+ |
-| - Original photos|                                                          | | Primary DB   | |
-| - Thumbnails     |                                                          | | (writes)     | |
-+------------------+                                                          | +------+-------+ |
-                                                                              |        |         |
-                                                                              |   replication   |
-                                                                              |        |         |
-                                                                              | +------v-------+ |
-                                                                              | | Read Replica | |
-                                                                              | | (reads)      | |
-                                                                              | +--------------+ |
-                                                                              +------------------+
+                          ┌─────────────────────────────────────────────────────────────┐
+                          │                        USERS (Mobile/Web)                    │
+                          └──────────────┬──────────────────────────┬───────────────────┘
+                                         │                          │
+                              Read requests (feed)        Write requests (upload)
+                                         │                          │
+                                         ▼                          ▼
+                          ┌──────────────────────────┐   ┌──────────────────────┐
+                          │          CDN             │   │     Load Balancer     │
+                          │  (serves photos &        │   │  (distributes traffic │
+                          │   thumbnails to users)   │   │   to app servers)     │
+                          └──────────┬───────────────┘   └──────────┬───────────┘
+                                     │                              │
+                                     │          ┌───────────────────┼───────────────────┐
+                                     │          │                   │                   │
+                                     │          ▼                   ▼                   ▼
+                                     │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
+                                     │  │  App Server  │  │  App Server  │  │  App Server  │
+                                     │  │    (1)       │  │    (2)       │  │    (N)       │
+                                     │  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘
+                                     │         │                 │                 │
+                                     │         └─────────────────┼─────────────────┘
+                                     │                           │
+                                     │              ┌────────────┴────────────┐
+                                     │              │                         │
+                                     │              ▼                         ▼
+                                     │  ┌───────────────────┐    ┌───────────────────┐
+                                     │  │    Cache Layer     │    │   Message Queue    │
+                                     │  │  (Redis/Memcached) │    │  (thumbnail jobs)  │
+                                     │  │  feed data, user   │    └─────────┬─────────┘
+                                     │  │  sessions, hot data│              │
+                                     │  └───────────────────┘              ▼
+                                     │                         ┌───────────────────────┐
+                                     │                         │   Worker Service       │
+                                     │                         │  (generates thumbnails)│
+                                     │                         └───────────┬───────────┘
+                                     │                                     │
+                          ┌──────────┴─────────────────────────────────────┴──────────┐
+                          │                                                           │
+                          ▼                                                           ▼
+              ┌───────────────────────┐                               ┌───────────────────────┐
+              │    Object Storage     │                               │      Database          │
+              │  (S3 / GCS / Blob)    │                               │  ┌─────────────────┐  │
+              │                       │                               │  │   Primary DB     │  │
+              │  • Original photos    │                               │  │   (writes)       │  │
+              │  • Thumbnails         │                               │  └────────┬────────┘  │
+              │                       │                               │           │ replicate │
+              └───────────────────────┘                               │  ┌────────┴────────┐  │
+                                                                      │  │  Read Replica   │  │
+                                                                      │  │  (reads)        │  │
+                                                                      │  └─────────────────┘  │
+                                                                      └───────────────────────┘
 ```
 
 ---
 
-## Component Descriptions (one sentence each)
+## Component Descriptions (one sentence per component — the problem it solves)
 
-- **CDN**: Caches photo files and thumbnails at edge locations close to users so image requests are served with low latency without hitting origin servers.
-- **Load Balancer**: Distributes incoming API requests across multiple app servers to prevent any single server from being overwhelmed and to provide fault tolerance.
-- **App Servers**: Process application logic including authentication, feed generation, upload handling, and API responses, and can be horizontally scaled by adding more instances.
-- **Cache (Redis/Memcached)**: Stores frequently accessed data such as feeds and user sessions in memory so reads complete in milliseconds instead of querying the database.
-- **Database (Primary)**: Stores all structured metadata (users, photos, followers, feed state) and handles all write operations with strong consistency.
-- **Database (Read Replica)**: Maintains an asynchronous copy of the primary database to serve all read queries, offloading read traffic from the primary.
-- **Object Storage (S3/GCS)**: Stores the actual photo files and thumbnails durably and cheaply at massive scale, separate from the database.
-- **Message Queue**: Decouples thumbnail generation from the upload request so users receive an immediate response while image processing happens asynchronously.
-- **Worker Service**: Picks up thumbnail jobs from the queue, generates resized thumbnails from original photos, and uploads them to object storage.
+| Component | Problem It Solves |
+|---|---|
+| **CDN** | Solves the problem of high latency and origin server overload by caching photos and thumbnails at edge locations close to users. |
+| **Load Balancer** | Solves the problem of uneven traffic distribution and single points of failure by routing requests across multiple app servers. |
+| **App Servers** | Solve the problem of handling application logic (authentication, feed generation, uploads) at scale by being horizontally scalable. |
+| **Cache (Redis/Memcached)** | Solves the problem of slow database reads by storing frequently accessed data (feeds, sessions) in memory for millisecond access. |
+| **Database (Primary)** | Solves the problem of storing structured metadata (users, photos, followers) with strong consistency for write operations. |
+| **Database (Read Replica)** | Solves the problem of read queries competing with writes on the primary database by serving all reads from an asynchronous copy. |
+| **Object Storage (S3/GCS)** | Solves the problem of storing massive binary files (photos) cheaply and durably at scale, separate from the database. |
+| **Message Queue** | Solves the problem of slow upload responses by decoupling thumbnail generation from the upload request. |
+| **Worker Service** | Solves the problem of CPU-intensive image processing blocking app servers by handling thumbnail generation asynchronously. |
 
 ---
 
 ## Upload Flow (Step-by-Step)
 
-1. The user selects a photo in the app and taps "Upload."
-2. The app sends the photo file to the Load Balancer over HTTPS.
-3. The Load Balancer routes the request to an available App Server.
-4. The App Server authenticates the user and validates the file (type, size).
-5. The App Server generates a unique photo ID and uploads the original photo directly to Object Storage (S3).
-6. The App Server writes the photo metadata (photo ID, user ID, timestamp, caption, S3 URL) to the Primary Database.
-7. The App Server publishes a "thumbnail job" message to the Message Queue, containing the photo ID and the S3 path of the original photo.
-8. The App Server returns a success response to the user immediately — the photo is now visible on their profile.
-9. A Worker Service picks up the thumbnail job from the queue.
-10. The Worker downloads the original photo from Object Storage, resizes it to produce a 50 KB thumbnail, and uploads the thumbnail to Object Storage at a new path.
-11. The Worker updates the photo's metadata in the database with the thumbnail's URL.
-12. The thumbnail is now available through the CDN for fast delivery in other users' feeds.
+```
+Step 1:  User selects a photo in the app and taps "Upload".
+
+Step 2:  The app sends the photo to the Load Balancer via HTTPS.
+
+Step 3:  The Load Balancer routes the request to an available App Server.
+
+Step 4:  The App Server validates the upload (file type, size limits, authentication).
+
+Step 5:  The App Server generates a unique photo ID and uploads the original photo
+         directly to Object Storage (S3).
+
+Step 6:  The App Server writes photo metadata (photo ID, user ID, timestamp, caption,
+         S3 URL) to the Primary Database.
+
+Step 7:  The App Server publishes a "thumbnail job" message to the Message Queue
+         containing the photo ID and S3 path.
+
+Step 8:  The App Server returns a success response to the user (the photo appears
+         in their profile immediately).
+
+Step 9:  A Worker Service picks up the thumbnail job from the queue.
+
+Step 10: The Worker downloads the original photo from Object Storage, resizes it
+         to generate a 50 KB thumbnail, and uploads the thumbnail back to
+         Object Storage (with a different path/key).
+
+Step 11: The Worker updates the photo metadata in the database with the thumbnail URL.
+
+Step 12: The thumbnail is now available via the CDN for fast delivery to other users'
+         feeds.
+```
 
 ---
 
 ## Trade-offs
 
-### Trade-off 1: Pull-based vs. Push-based Feed Generation
+### Trade-off 1: Eventual Consistency vs. Strong Consistency (Feed Generation)
 
-**Choice**: We use a pull-based model where feeds are assembled on-demand when a user opens the app, rather than pre-computing (pushing) every follower's feed at upload time.
+**Choice:** We use eventual consistency for the feed — when a user uploads a photo, it may take a few seconds before it appears in their followers' feeds.
 
-**Pros**: Simple to implement; no storage overhead for pre-built feeds; works well when users have many followers (no fan-out explosion).
+**Benefit:** The upload path is fast (user gets immediate confirmation), and we avoid locking the database for complex fan-out operations. The system scales well because feed generation can happen asynchronously.
 
-**Cons**: Feed assembly requires a database query on every view, adding latency; new photos may not appear instantly if caching delays refresh.
+**Cost:** Followers may not see a new photo instantly. In a social app this is usually acceptable, but for time-sensitive content (e.g., breaking news photos), users might notice a delay.
 
-**Alternative**: A push-based model (fan-out on write) pre-builds each follower's feed when a photo is uploaded, giving instant visibility but requiring massive write amplification for users with millions of followers.
-
----
-
-### Trade-off 2: Long CDN Cache TTL vs. Short CDN Cache TTL
-
-**Choice**: We use a long TTL (e.g., 24+ hours) for photos and thumbnails on the CDN.
-
-**Pros**: Most requests are served from edge caches, drastically reducing load on origin servers and object storage; users worldwide get very low latency.
-
-**Cons**: If a user deletes or replaces a photo, the old version may remain visible on the CDN until the TTL expires, creating a window of stale or incorrect content.
-
-**Alternative**: A short TTL (e.g., 60 seconds) or active cache invalidation ensures content freshness but increases origin traffic and reduces the CDN's performance benefit.
+**Alternative:** We could use synchronous fan-out (write to every follower's feed immediately on upload), which gives instant visibility but makes uploads slower and doesn't scale for users with millions of followers.
 
 ---
 
-### Trade-off 3: Synchronous vs. Asynchronous Thumbnail Generation
+### Trade-off 2: CDN Caching TTL vs. Content Freshness
 
-**Choice**: Thumbnails are generated asynchronously via a message queue and worker service.
+**Choice:** We cache photos and thumbnails on the CDN with a long TTL (e.g., 24 hours or more).
 
-**Pros**: Upload responses are fast (no waiting for image processing); CPU-intensive resizing is offloaded from app servers to dedicated workers that scale independently.
+**Benefit:** The vast majority of photo requests are served from CDN edge caches, dramatically reducing load on origin servers and object storage, and providing very low latency to users worldwide.
 
-**Cons**: There is a delay before the thumbnail is available; users viewing their own profile immediately after upload may see a placeholder.
+**Cost:** If a user deletes a photo or edits their profile, the old version may remain visible on the CDN until the cache expires. This creates a window where stale or deleted content is still accessible.
 
-**Alternative**: Generating thumbnails synchronously during upload eliminates the delay but adds 1-3 seconds to every upload and couples image processing to the request path, reducing overall throughput.
+**Alternative:** We could use a very short TTL (e.g., 60 seconds) or implement cache invalidation on every update. This ensures freshness but increases origin load and reduces the performance benefit of the CDN.
+
+---
+
+### Trade-off 3: Thumbnail Generation — Synchronous vs. Asynchronous
+
+**Choice:** We generate thumbnails asynchronously via a queue and worker.
+
+**Benefit:** The upload response is fast because the user doesn't wait for image processing. Heavy CPU work (resizing) is offloaded from the app servers to dedicated workers that can be scaled independently.
+
+**Cost:** There is a delay between upload and thumbnail availability. If a user views their own profile immediately after uploading, they may see a placeholder or no thumbnail until the worker finishes.
+
+**Alternative:** We could generate thumbnails synchronously during upload. This eliminates the delay but makes uploads slower (adds 1–3 seconds of processing time) and couples image processing to the request path, reducing throughput.
